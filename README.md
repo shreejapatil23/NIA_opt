@@ -1,9 +1,10 @@
 # Nature-Inspired Optimizers: A Benchmarking Framework
 
-Compares four nature-inspired algorithms on (1) standard and shifted benchmark
-functions and (2) a real machine-learning task, feature selection on the
-breast-cancer dataset. Random Search, Differential Evolution and three classical
-feature-selection methods are included as baselines.
+Compares four nature-inspired algorithms on (1) standard, shifted and
+sign-flipped benchmark functions and (2) a real machine-learning task, feature
+selection on the breast-cancer dataset. Random Search, Differential Evolution
+and three classical feature-selection methods are included as baselines, and a
+diagnostic experiment checks *why* some algorithms win.
 
 | Algorithm | Inspiration |
 |---|---|
@@ -23,16 +24,20 @@ feature-selection methods are included as baselines.
 | File | Purpose |
 |---|---|
 | `optimizers.py` | GA, PSO, GWO, WOA + Random Search and DE, all sharing one interface |
-| `problems.py` | Benchmark functions (incl. shifted ones), the feature-selection problem, classical selection methods |
+| `problems.py` | Benchmark functions (incl. shifted / sign-flipped), the feature-selection problem, classical selection methods |
 | `stat_tests.py` | Mann-Whitney U tests, Holm correction, Friedman ranks |
-| `run_benchmarks.py` | Experiment 1: 10 functions, dim 30, 20 runs each |
+| `tune_parameters.py` | Picks GA / PSO / DE settings on separate tuning problems |
+| `diagnose_bias.py` | Tests for centre bias and diagonal bias |
+| `run_benchmarks.py` | Experiment 1: 11 functions, dim 30, 20 runs each |
 | `run_feature_selection.py` | Experiment 2: feature selection (10 runs each, held-out test set) |
-| `results/` | Plots and tables produced by the two scripts |
+| `results/` | Plots and tables produced by the scripts |
 
 ## Run it
 
 ```bash
 pip install -r requirements.txt
+python tune_parameters.py                      # ~1 min  -> results/tuning.md
+python diagnose_bias.py                        # ~30 s   -> results/bias_diagnostics.md
 python run_benchmarks.py                       # ~1.5 min on 8 cores
 python run_feature_selection.py breast_cancer  # ~1.5 min on 8 cores
 python run_feature_selection.py wine           # optional second dataset
@@ -53,11 +58,28 @@ use the fraction of the budget spent instead. `history[i]` is the best fitness
 after `i+1` evaluations, so convergence curves line up exactly, and the
 starting population is included. Wall-clock time per run is reported as well.
 
+**Faithful implementations.** GWO's alpha, beta and delta are the three best
+wolves found *so far*, as in the original paper. PSO particles that hit the
+edge of the search box have their velocity reversed and damped, instead of
+continuing to push outward. Without this, whole swarms got stuck on the wall
+(see `results/tuning.md`).
+
+**Parameter tuning on separate problems.** Settings for GA (mutation step
+schedule), PSO (inertia vs. constriction, wall handling) and DE (strategy) are
+chosen by `tune_parameters.py` on *different* problems from the ones reported:
+dimension 10, different shifts, random sign flips, a smaller budget. Tuning on
+the reported benchmarks would flatter whichever algorithm got tuned most. Chosen:
+GA with a fixed mutation step, PSO with inertia 0.9→0.4, c1 = c2 = 1.5 and
+reflecting walls, DE/rand/1 with F = 0.5, CR = 0.9. GWO and WOA have no free
+parameters in their standard form.
+
 **Benchmarks.** Sphere, Rastrigin, Ackley and Griewank have their optimum at the
 centre of the search box. Rosenbrock (optimum at (1,…,1)), Schwefel (optimum
 near the edge) and *shifted* versions of the first four, `f(x − o)` with a fixed
 random `o` inside 80% of the bounds, test whether an algorithm still works when
-the answer isn't in the middle.
+the answer isn't in the middle. Schwefel's optimum (420.97, …, 420.97) also lies
+on the main diagonal, so a *sign-flipped* Schwefel (`f(s·x)`, random `s_i = ±1`)
+has the same difficulty but an optimum off the diagonal.
 
 **Feature selection.** A solution is a vector in [0,1]^n_features. Features
 with value > 0.5 are selected. Fitness (minimized) is
@@ -83,32 +105,51 @@ split; the subset with the best value of the *same* fitness is kept.
 
 | Function | GA | PSO | GWO | WOA | Random | DE |
 |---|---|---|---|---|---|---|
-| Sphere | 5.9e+00 | 1.9e+01 | 4.1e-10 | **4.6e-31** | 4.5e+04 | 5.3e+01 |
-| Rastrigin | 2.3e+01 | 8.0e+01 | 9.4e+00 | **1.1e-14** | 3.6e+02 | 2.1e+02 |
-| Ackley | 1.3e+00 | 2.7e+00 | 4.4e-06 | **1.0e-14** | 2.0e+01 | 3.8e+00 |
-| Griewank | 1.1e+00 | 1.1e+00 | **9.7e-03** | 4.5e-02 | 4.0e+02 | 1.5e+00 |
-| Rosenbrock | 3.0e+02 | 9.5e+03 | 2.8e+01 | **2.5e+01** | 1.1e+08 | 2.0e+04 |
-| Schwefel | 2.7e+03 | 4.9e+03 | 6.8e+03 | **1.4e+02** | 8.6e+03 | 7.3e+03 |
-| Shifted Sphere | **9.7e+00** | 2.7e+03 | 1.6e+03 | 3.5e+04 | 5.7e+04 | 2.2e+02 |
-| Shifted Rastrigin | **4.5e+01** | 9.9e+01 | 1.2e+02 | 3.1e+02 | 3.9e+02 | 2.1e+02 |
-| Shifted Ackley | **1.6e+00** | 8.0e+00 | 9.5e+00 | 1.9e+01 | 2.0e+01 | 3.7e+00 |
-| Shifted Griewank | **1.1e+00** | 2.6e+01 | 1.6e+01 | 3.2e+02 | 5.2e+02 | 2.2e+00 |
+| Sphere | 5.9e+00 | 7.9e+00 | 1.9e-10 | **4.6e-31** | 4.5e+04 | 5.3e+01 |
+| Rastrigin | 2.3e+01 | 6.2e+01 | 3.5e+01 | **1.1e-14** | 3.6e+02 | 2.1e+02 |
+| Ackley | 1.3e+00 | 2.9e+00 | 3.9e-06 | **1.0e-14** | 2.0e+01 | 3.8e+00 |
+| Griewank | 1.1e+00 | 9.8e-01 | **1.7e-02** | 4.5e-02 | 4.0e+02 | 1.5e+00 |
+| Rosenbrock | 3.0e+02 | 4.9e+02 | 2.8e+01 | **2.5e+01** | 1.1e+08 | 2.0e+04 |
+| Schwefel | 2.7e+03 | 5.0e+03 | 6.5e+03 | **1.4e+02** | 8.6e+03 | 7.3e+03 |
+| Schwefel (sign-flipped) | **2.9e+03** | 5.1e+03 | 7.0e+03 | 8.2e+03 | 8.7e+03 | 7.3e+03 |
+| Shifted Sphere | **9.7e+00** | 1.7e+01 | 2.1e+03 | 3.5e+04 | 5.7e+04 | 2.2e+02 |
+| Shifted Rastrigin | **4.5e+01** | 9.5e+01 | 1.0e+02 | 3.1e+02 | 3.9e+02 | 2.1e+02 |
+| Shifted Ackley | **1.6e+00** | 2.9e+00 | 9.2e+00 | 1.9e+01 | 2.0e+01 | 3.7e+00 |
+| Shifted Griewank | 1.1e+00 | **9.9e-01** | 1.6e+01 | 3.2e+02 | 5.2e+02 | 2.2e+00 |
 
 Mean final fitness, lower is better (all optima are 0).
 
-| Algorithm | Mean rank, all 10 | Optimum at centre (4) | Optimum off-centre (6) |
+| Algorithm | Mean rank, all 11 | Optimum at centre (4) | Optimum off-centre (7) |
 |---|---|---|---|
-| GA | **2.10** | 3.00 | **1.50** |
-| GWO | 2.60 | 1.75 | 3.17 |
-| WOA | 2.70 | **1.25** | 3.67 |
-| PSO | 3.60 | 4.00 | 3.33 |
-| DE | 4.00 | 5.00 | 3.33 |
+| GA | **2.09** | 3.00 | **1.57** |
+| PSO | 2.82 | 3.75 | 2.29 |
+| GWO | 2.91 | 2.00 | 3.43 |
+| WOA | 2.91 | **1.25** | 3.86 |
+| DE | 4.27 | 5.00 | 3.86 |
 | Random | 6.00 | 6.00 | 6.00 |
 
-Friedman test over all 10 functions: p = 3.1e-05. Std, best and time per run
+Friedman test over all 11 functions: p = 7.8e-06. Std, best and time per run
 are in `results/benchmark_table.md`; Holm-corrected pairwise tests for every
 function are in `results/benchmark_stats.md`; curves are in
 `results/benchmark_convergence.png`.
+
+### Bias diagnostics (dim 30, 6000 evaluations, 10 runs)
+
+Within each group only the *position* of the optimum changes, so an unbiased
+algorithm should score about the same.
+
+| Problem | GA | PSO | GWO | WOA |
+|---|---|---|---|---|
+| Sphere, optimum at centre | 6.7e+00 | 7.9e+00 | 1.6e-10 | 1.2e-32 |
+| Sphere, optimum at random point | 9.2e+00 | 1.1e+01 | 1.7e+03 | 3.4e+04 |
+| Sphere, optimum at (60,…,60) | 1.5e+01 | 7.7e+00 | 2.4e+03 | 9.5e+00 |
+| Schwefel, optimum on diagonal | 2.6e+03 | 5.0e+03 | 6.4e+03 | 1.9e+02 |
+| Schwefel, signs flipped | 2.9e+03 | 5.1e+03 | 6.7e+03 | 8.1e+03 |
+
+GA and PSO are unaffected. GWO is centre-biased. WOA is centre-biased *and*
+diagonal-biased: it is excellent whenever the optimum has all coordinates
+equal, wherever that is, and poor otherwise. Full table with baselines in
+`results/bias_diagnostics.md`.
 
 ### Experiment 2: feature selection, breast cancer (400 evaluations, population 16, 10 runs)
 
@@ -116,8 +157,8 @@ function are in `results/benchmark_stats.md`; curves are in
 |---|---|---|---|---|
 | All features | 0.0810 | 30 | 0.967 | 0.947 |
 | GA | 0.0350 | 11.7 ± 2.2 | 0.984 | 0.939 ± 0.006 |
-| PSO | 0.0343 | 12.3 ± 2.3 | 0.986 | 0.944 ± 0.008 |
-| **GWO** | **0.0249** | 7.5 ± 2.2 | 0.987 | 0.939 ± 0.010 |
+| PSO | 0.0324 | 10.3 ± 2.0 | 0.984 | 0.942 ± 0.010 |
+| **GWO** | **0.0253** | 7.6 ± 2.0 | 0.987 | 0.939 ± 0.010 |
 | WOA | 0.0419 | 11.3 ± 2.2 | 0.976 | 0.938 ± 0.012 |
 | Random search | 0.0385 | 10.4 ± 2.5 | 0.978 | 0.947 ± 0.009 |
 | DE | 0.0286 | 9.9 ± 1.5 | 0.987 | 0.940 ± 0.009 |
@@ -126,29 +167,32 @@ function are in `results/benchmark_stats.md`; curves are in
 | L1 logistic | 0.0282 | 4 | 0.977 | 0.947 |
 
 - GWO reaches the best mean fitness. After Holm correction it is significantly
-  better than GA, WOA and Random Search, but **not** significantly better than
-  PSO (p = 0.052) or DE (p = 0.071).
-- GA, PSO and WOA are **not** significantly better than Random Search.
-- The features chosen most often were *worst texture* (87.5% of runs) and
-  *worst concave points* (82.5%), then *worst perimeter* and *worst radius* (60%).
-- On the wine dataset (`results/featsel_wine_table.md`) no pair of algorithms
-  differs significantly after correction.
+  better than GA, PSO, WOA and Random Search, but **not** significantly better
+  than DE (p = 0.095).
+- PSO is significantly better than Random Search; GA and WOA are **not**.
+- The features chosen most often were *worst texture* (82.5% of runs) and
+  *worst concave points* (72.5%), then *worst radius*, *mean perimeter* and
+  *mean radius* (57.5%).
+- On the wine dataset (`results/featsel_wine_table.md`) the only significant
+  difference after correction is GWO better than WOA.
 
 ## Findings and caveats (say these in the presentation, they show maturity)
 
-1. **The benchmark win for WOA and GWO is largely centre bias.** On the four
-   centred functions WOA ranks first (1.25) and GWO second. Move the same
-   functions' optimum away from the centre and WOA drops to 3.67, on Shifted
-   Sphere barely better than random search (3.5e4 vs 5.7e4). GA, which has no
-   built-in pull toward the origin, wins all four shifted functions. The
-   original Sphere/Rastrigin/Ackley results said more about where the test
-   functions put their optimum than about the algorithms.
+1. **WOA's and GWO's benchmark wins are largely search bias, not search skill.**
+   On the four centred functions WOA ranks first (1.25) and GWO second. Move the
+   optimum away from the centre and both fall behind GA and PSO; on Shifted
+   Sphere WOA is barely better than random search (3.5e4 vs 5.7e4). WOA's
+   Schwefel "win" comes from a second bias: Schwefel's optimum lies on the
+   diagonal, and flipping coordinate signs takes WOA from 140 to 8,200 (worse
+   than GA, PSO and GWO). GA, which has neither bias, is the best algorithm
+   overall (mean rank 2.09) and wins 4 of the 7 off-centre functions,
+   including every one where WOA's biases don't apply.
 2. **The ranking changes with the problem.** WOA wins the centred benchmarks,
-   GA the shifted ones, GWO feature selection. No single algorithm is best
+   GA the off-centre ones, GWO feature selection. No single algorithm is best
    everywhere (the "no free lunch" idea).
 3. **A classical method matches the best metaheuristic on feature selection.**
    RFE with logistic regression reaches the same fitness as GWO (0.0250 vs
-   0.0249 on average), with 5 features instead of 7.5, in under a second of
+   0.0253 on average), with 5 features instead of 7.6, in under a second of
    deterministic computation instead of ~8 s per run. L1-logistic gets 4
    features. On this small dataset the metaheuristics are not needed; their
    case would be stronger on problems where no good ranking method exists.
@@ -157,14 +201,22 @@ function are in `results/benchmark_stats.md`; curves are in
    than using all features (0.947). On 171 test samples one point is about 1-2
    patients, so the honest conclusion is: *far fewer features at about the same
    accuracy*, not *better accuracy*.
-5. **PSO and DE are weak at this budget** with standard settings (PSO: inertia
-   0.9 to 0.4, c1 = c2 = 1.5; DE: F = 0.5, CR = 0.9). Both converge slowly in
-   6000 evaluations in 30 dimensions; parameter tuning would help.
-6. **Timings depend on caching.** Fitness values of already-seen feature subsets
+5. **Implementation details matter as much as the algorithm.** The first PSO
+   version let particles keep pushing against the wall of the search box; in
+   about 1 run in 5 the whole swarm got stuck there. Reflecting the velocity
+   fixed it and took PSO from 4th to 2nd overall (Shifted Sphere 2.7e3 → 17,
+   Rosenbrock 9.5e3 → 490). My very first PSO also used c1 = c2 = 2, which is
+   unstable for much of the run.
+6. **Parameters were tuned fairly, and not every "improvement" helped.** Settings
+   were chosen on separate tuning problems (`results/tuning.md`). A shrinking
+   GA mutation step helped on smooth functions but hurt on multimodal ones, so
+   the fixed step was kept. DE stays weak at this budget in 30 dimensions with
+   every strategy tried.
+7. **Timings depend on caching.** Fitness values of already-seen feature subsets
    are cached, so algorithms that revisit subsets (GA, WOA) run faster than
    Random Search, which almost never repeats a subset. The evaluation budget,
    not wall time, is the fair comparison.
-7. Experiment 2 uses a small budget (10 runs, 400 evaluations) so it finishes in
+8. Experiment 2 uses a small budget (10 runs, 400 evaluations) so it finishes in
    minutes. More runs would tighten the statistics; with 10 runs and 15
    comparisons, only large differences survive the Holm correction.
 
@@ -174,19 +226,17 @@ function are in `results/benchmark_stats.md`; curves are in
    (non-convex, no gradient) where classical methods struggle.
 2. **The four algorithms.** One line of biology each, plus one line on the update
    rule. Use the table at the top of this file.
-3. **Framework design.** The common interface and the equal evaluation budget,
-   so a fair comparison is possible. Show the `optimize()` signature.
+3. **Framework design.** The common interface, equal evaluation budget and
+   separate tuning problems, so a fair comparison is possible.
 4. **Experiment 1: benchmarks.** Show `benchmark_convergence.png`. WOA and GWO
-   win on centred functions; GA wins once the optimum is shifted.
-5. **Experiment 2: feature selection.** Explain the encoding (vector in [0,1],
-   threshold 0.5) and the fitness formula.
-6. **Results.** Show `featsel_breast_cancer.png`: GWO converges fastest and
-   selects the fewest features. Compare with Random Search and RFE.
-7. **Limitations (findings 1, 3 and 4 above).** Centre bias, classical methods
-   are competitive, CV vs held-out accuracy.
-8. **Conclusion and future work.** No single winner; next steps are CEC
-   benchmark suites, tuned parameters, and multi-objective NSGA-II (accuracy vs
-   subset size).
+   win on centred functions; GA wins once the optimum is moved.
+5. **Bias diagnostics.** The table above: same function, only the optimum moves.
+6. **Experiment 2: feature selection.** Encoding, fitness formula, and
+   `featsel_breast_cancer.png`: GWO is best, but RFE matches it.
+7. **Limitations.** CV vs held-out accuracy, small run counts, one dataset split.
+8. **Conclusion and future work.** No single winner; benchmark results can
+   reflect search bias. Next: CEC benchmark suites, high-dimensional feature
+   selection, multi-objective NSGA-II (accuracy vs subset size).
 
 ## Likely questions from examiners
 
@@ -199,6 +249,11 @@ function are in `results/benchmark_stats.md`; curves are in
 - *Why compare on evaluations rather than iterations?* Evaluating the fitness is
   the expensive step, and algorithms use different numbers of evaluations per
   iteration.
+- *Why tune on different problems?* Tuning on the test functions would favour
+  the algorithms with more parameters to tune.
+- *What causes WOA's diagonal bias?* WOA draws one random number per whale
+  (A, C, l) and applies it to every coordinate, so its moves are correlated
+  across dimensions. GWO and PSO draw a random number per coordinate.
 - *Why shifted functions?* To check whether good results come from the
   algorithm or from the optimum sitting at the centre of the search space.
 - *Why a held-out set?* Because the optimizer tunes feature choice directly

@@ -40,6 +40,26 @@ def schwefel(x):
     return float(418.9828872724338 * len(x) - np.sum(x * np.sin(np.sqrt(np.abs(x)))))
 
 
+class SignFlipped:
+    """f(s * x) with a fixed random sign s_i = +-1 per coordinate.
+
+    Same difficulty and same optimum value, but an optimum like Schwefel's
+    (420.97, ..., 420.97), which lies on the main diagonal, is moved off it.
+    Exposes algorithms whose moves are correlated across dimensions."""
+
+    def __init__(self, func, seed=0):
+        self.func, self.seed = func, seed
+        self._s = {}
+
+    def signs(self, dim):
+        if dim not in self._s:
+            self._s[dim] = np.random.default_rng(self.seed).choice([-1.0, 1.0], dim)
+        return self._s[dim]
+
+    def __call__(self, x):
+        return self.func(self.signs(len(x)) * x)
+
+
 class Shifted:
     """f(x - o): moves the optimum from the origin to a random point o.
 
@@ -73,6 +93,7 @@ BENCHMARKS = {
     # optimum away from the centre
     "Rosenbrock": (rosenbrock, -30.0, 30.0),
     "Schwefel": (schwefel, -500.0, 500.0),
+    "Schwefel (sign-flipped)": (SignFlipped(schwefel, seed=5), -500.0, 500.0),
     "Shifted Sphere": (Shifted(sphere, -100.0, 100.0, seed=1), -100.0, 100.0),
     "Shifted Rastrigin": (Shifted(rastrigin, -5.12, 5.12, seed=2), -5.12, 5.12),
     "Shifted Ackley": (Shifted(ackley, -32.0, 32.0, seed=3), -32.0, 32.0),

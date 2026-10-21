@@ -79,13 +79,20 @@ class RandomSearch(Optimizer):
 
 
 class DE(Optimizer):
-    """Reference baseline: Differential Evolution, DE/rand/1/bin
-    (Storn & Price, 1997)."""
+    """Reference baseline: Differential Evolution with binomial crossover
+    (Storn & Price, 1997). Strategies:
+      "rand/1"            v = x_r1 + F (x_r2 - x_r3)                  (robust, slow)
+      "best/1"            v = x_best + F (x_r1 - x_r2)                (fast, greedy)
+      "current-to-best/1" v = x_i + F (x_best - x_i) + F (x_r1 - x_r2)
+    """
     name = "DE"
+    STRATEGIES = ("rand/1", "best/1", "current-to-best/1")
 
-    def __init__(self, *a, F=0.5, CR=0.9, **kw):
+    def __init__(self, *a, F=0.5, CR=0.9, strategy="rand/1", **kw):
         super().__init__(*a, **kw)
-        self.F, self.CR = F, CR
+        if strategy not in self.STRATEGIES:
+            raise ValueError(f"strategy must be one of {self.STRATEGIES}")
+        self.F, self.CR, self.strategy = F, CR, strategy
 
     def optimize(self, fitness, dim, lb, ub):
         self._start(fitness)
@@ -94,9 +101,15 @@ class DE(Optimizer):
         f = self._eval(x)
         while not self._done():
             trial = np.empty_like(x)
+            best = x[np.argmin(f)]
             for i in range(n):
                 r1, r2, r3 = rng.choice([j for j in range(n) if j != i], 3, replace=False)
-                mutant = x[r1] + self.F * (x[r2] - x[r3])
+                if self.strategy == "rand/1":
+                    mutant = x[r1] + self.F * (x[r2] - x[r3])
+                elif self.strategy == "best/1":
+                    mutant = best + self.F * (x[r1] - x[r2])
+                else:
+                    mutant = x[i] + self.F * (best - x[i]) + self.F * (x[r1] - x[r2])
                 cross = rng.random(dim) < self.CR
                 cross[rng.integers(dim)] = True          # at least one gene from mutant
                 trial[i] = np.clip(np.where(cross, mutant, x[i]), lb, ub)
@@ -110,9 +123,21 @@ class PSO(Optimizer):
     """Particle Swarm Optimization (inertia-weight variant)."""
     name = "PSO"
 
-    def __init__(self, *a, w_max=0.9, w_min=0.4, c1=1.5, c2=1.5, **kw):
+    BOUNDARIES = ("clip", "zero", "reflect")
+
+    def __init__(self, *a, w_max=0.9, w_min=0.4, c1=1.5, c2=1.5,
+                 boundary="reflect", **kw):
+        """boundary: what happens to the velocity of a particle that leaves the box
+        (its position is always clipped back inside):
+          "clip"    velocity unchanged: it keeps pushing outward, so the swarm can
+                    get stuck on the wall
+          "zero"    velocity set to 0 in that coordinate
+          "reflect" velocity reversed and damped by a random factor in [0, 1)"""
         super().__init__(*a, **kw)
+        if boundary not in self.BOUNDARIES:
+            raise ValueError(f"boundary must be one of {self.BOUNDARIES}")
         self.w_max, self.w_min, self.c1, self.c2 = w_max, w_min, c1, c2
+        self.boundary = boundary
 
     def optimize(self, fitness, dim, lb, ub):
         self._start(fitness)
@@ -129,7 +154,13 @@ class PSO(Optimizer):
             r1, r2 = rng.random(x.shape), rng.random(x.shape)
             v = w * v + self.c1 * r1 * (pbest - x) + self.c2 * r2 * (gbest - x)
             v = np.clip(v, -vmax, vmax)
-            x = np.clip(x + v, lb, ub)
+            x = x + v
+            out = (x < lb) | (x > ub)
+            if self.boundary == "zero":
+                v[out] = 0.0
+            elif self.boundary == "reflect":
+                v[out] *= -rng.random(out.sum())
+            x = np.clip(x, lb, ub)
             f = self._eval(x)
             better = f < pbest_f
             pbest[better], pbest_f[better] = x[better], f[better]
@@ -143,10 +174,20 @@ class GA(Optimizer):
     name = "GA"
 
     def __init__(self, *a, crossover_rate=0.9, mutation_rate=None,
-                 mutation_sigma=0.1, elite=2, tournament=3, **kw):
+                 mutation_sigma=0.1, sigma_final=None, elite=2, tournament=3, **kw):
+        """Mutation step size is `mutation_sigma` x (ub - lb). If `sigma_final` is
+        given, it shrinks geometrically to that value over the budget (big jumps
+        early, small steps late). Default: fixed, chosen by tune_parameters.py
+        (shrinking helped smooth functions but hurt multimodal ones)."""
         super().__init__(*a, **kw)
         self.cr, self.mr = crossover_rate, mutation_rate
-        self.sigma, self.elite, self.k = mutation_sigma, elite, tournament
+        self.sigma, self.sigma_final = mutation_sigma, sigma_final
+        self.elite, self.k = elite, tournament
+
+    def _sigma(self):
+        if self.sigma_final is None:
+            return self.sigma
+        return self.sigma * (self.sigma_final / self.sigma) ** self._progress()
 
     def _select(self, pop, f):
         idx = self.rng.integers(0, len(pop), size=self.k)
@@ -162,6 +203,7 @@ class GA(Optimizer):
             order = np.argsort(f)
             elite_pop, elite_f = pop[order[:self.elite]], f[order[:self.elite]]
             children = []
+            sigma = self._sigma()
             for _ in range(self.pop_size - self.elite):
                 p1, p2 = self._select(pop, f), self._select(pop, f)
                 if rng.random() < self.cr:
@@ -170,7 +212,7 @@ class GA(Optimizer):
                 else:
                     c = p1.copy()
                 mask = rng.random(dim) < mr
-                c = c + mask * rng.normal(0, self.sigma * (ub - lb), dim)
+                c = c + mask * rng.normal(0, sigma * (ub - lb), dim)
                 children.append(np.clip(c, lb, ub))
             children = np.array(children)
             cf = self._eval(children)
@@ -188,24 +230,22 @@ class GWO(Optimizer):
         rng = self.rng
         x = self._init_pop(dim, lb, ub)
         f = self._eval(x)
-        order = np.argsort(f)
-        alpha, beta, delta = (x[order[i]].copy() for i in range(3))
-        alpha_f = f[order[0]]
+        order = np.argsort(f)[:3]
+        leaders, leaders_f = x[order].copy(), f[order].copy()   # alpha, beta, delta
         while not self._done():
             a = 2 - 2 * self._progress()
             new_x = np.zeros_like(x)
-            for leader in (alpha, beta, delta):
+            for leader in leaders:
                 r1, r2 = rng.random(x.shape), rng.random(x.shape)
                 A, C = 2 * a * r1 - a, 2 * r2
                 new_x += leader - A * np.abs(C * leader - x)
             x = np.clip(new_x / 3.0, lb, ub)
             f = self._eval(x)
-            order = np.argsort(f)
-            if f[order[0]] < alpha_f:
-                alpha_f = f[order[0]]
-                alpha = x[order[0]].copy()
-            # update beta/delta from current population (alpha kept as best-so-far)
-            beta, delta = x[order[1]].copy(), x[order[2]].copy()
+            # As in the original paper, alpha/beta/delta are the three best
+            # wolves found SO FAR: pick them from the old leaders + the new pack.
+            pool, pool_f = np.vstack([leaders, x]), np.concatenate([leaders_f, f])
+            order = np.argsort(pool_f, kind="stable")[:3]
+            leaders, leaders_f = pool[order].copy(), pool_f[order].copy()
         return self._result()
 
 
